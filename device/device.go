@@ -17,6 +17,11 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+// netBindRef wraps conn.Bind for atomic access from the hot path.
+type netBindRef struct {
+	bind conn.Bind
+}
+
 type Device struct {
 	state struct {
 		// state holds the device's state. It is accessed atomically.
@@ -40,7 +45,8 @@ type Device struct {
 	net struct {
 		stopping sync.WaitGroup
 		sync.RWMutex
-		bind          conn.Bind // bind interface
+		bind          conn.Bind                  // bind interface (write-path, protected by RWMutex)
+		cachedBind    atomic.Pointer[netBindRef] // lock-free read for hot send path
 		netlinkCancel *rwcancel.RWCancel
 		port          uint16 // listening port
 		fwmark        uint32 // mark value (0 = disabled)
@@ -287,6 +293,7 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device.closed = make(chan struct{})
 	device.log = logger
 	device.net.bind = bind
+	device.net.cachedBind.Store(&netBindRef{bind: bind})
 	device.tun.device = tunDevice
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
@@ -411,7 +418,8 @@ func (device *Device) SendKeepalivesToPeersWithCurrentKeypair() {
 	device.peers.RLock()
 	for _, peer := range device.peers.keyMap {
 		peer.keypairs.RLock()
-		sendKeepalive := peer.keypairs.current != nil && !peer.keypairs.current.created.Add(RejectAfterTime).Before(time.Now())
+		current := peer.keypairs.current.Load()
+		sendKeepalive := current != nil && !current.created.Add(RejectAfterTime).Before(time.Now())
 		peer.keypairs.RUnlock()
 		if sendKeepalive {
 			peer.SendKeepalive()
@@ -425,6 +433,8 @@ func (device *Device) SendKeepalivesToPeersWithCurrentKeypair() {
 func closeBindLocked(device *Device) error {
 	var err error
 	netc := &device.net
+	// Clear cached bind so hot-path senders stop using it immediately.
+	netc.cachedBind.Store(nil)
 	if netc.netlinkCancel != nil {
 		netc.netlinkCancel.Cancel()
 	}
@@ -492,6 +502,8 @@ func (device *Device) BindUpdate() error {
 		netc.port = 0
 		return err
 	}
+	// Restore cached bind for lock-free hot-path access.
+	netc.cachedBind.Store(&netBindRef{bind: netc.bind})
 
 	netc.netlinkCancel, err = device.startRouteListener(netc.bind)
 	if err != nil {

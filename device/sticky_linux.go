@@ -119,7 +119,7 @@ func (device *Device) routineRouteListener(_ conn.Bind, netlinkSock int, netlink
 									pePtr.peer.endpoint.Unlock()
 									break
 								}
-								pePtr.peer.endpoint.clearSrcOnTx = true
+								pePtr.peer.endpoint.clearSrcOnTx.Store(true)
 								pePtr.peer.endpoint.Unlock()
 							}
 							attr = attr[attrhdr.Len:]

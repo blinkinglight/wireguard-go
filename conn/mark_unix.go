@@ -31,8 +31,8 @@ func (s *StdNetBind) SetMark(mark uint32) error {
 	if fwmarkIoctl == 0 {
 		return nil
 	}
-	if s.ipv4 != nil {
-		fd, err := s.ipv4.SyscallConn()
+	if state4 := s.ipv4.Load(); state4 != nil {
+		fd, err := state4.conn.SyscallConn()
 		if err != nil {
 			return err
 		}
@@ -46,8 +46,8 @@ func (s *StdNetBind) SetMark(mark uint32) error {
 			return err
 		}
 	}
-	if s.ipv6 != nil {
-		fd, err := s.ipv6.SyscallConn()
+	if state6 := s.ipv6.Load(); state6 != nil {
+		fd, err := state6.conn.SyscallConn()
 		if err != nil {
 			return err
 		}

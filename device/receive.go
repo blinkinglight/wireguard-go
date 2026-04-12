@@ -126,6 +126,7 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 		deathSpiral = 0
 
 		// handle each packet in the batch
+		now := time.Now()
 		for i, size := range sizes[:count] {
 			if size < MinMessageSize {
 				continue
@@ -161,7 +162,7 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 
 				// check keypair expiry
 
-				if keypair.created.Add(RejectAfterTime).Before(time.Now()) {
+				if keypair.created.Add(RejectAfterTime).Before(now) {
 					continue
 				}
 

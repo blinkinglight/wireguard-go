@@ -676,7 +676,7 @@ func (peer *Peer) BeginSymmetricSession() error {
 
 	previous := keypairs.previous
 	next := keypairs.next.Load()
-	current := keypairs.current
+	current := keypairs.current.Load()
 
 	if isInitiator {
 		if next != nil {
@@ -687,7 +687,7 @@ func (peer *Peer) BeginSymmetricSession() error {
 			keypairs.previous = current
 		}
 		device.DeleteKeypair(previous)
-		keypairs.current = keypair
+		keypairs.current.Store(keypair)
 	} else {
 		keypairs.next.Store(keypair)
 		device.DeleteKeypair(next)
@@ -710,9 +710,9 @@ func (peer *Peer) ReceivedWithKeypair(receivedKeypair *Keypair) bool {
 		return false
 	}
 	old := keypairs.previous
-	keypairs.previous = keypairs.current
+	keypairs.previous = keypairs.current.Load()
 	peer.device.DeleteKeypair(old)
-	keypairs.current = keypairs.next.Load()
+	keypairs.current.Store(keypairs.next.Load())
 	keypairs.next.Store(nil)
 	return true
 }

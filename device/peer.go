@@ -28,8 +28,8 @@ type Peer struct {
 	endpoint struct {
 		sync.Mutex
 		val            conn.Endpoint
-		clearSrcOnTx   bool // signal to val.ClearSrc() prior to next packet transmission
-		disableRoaming bool
+		clearSrcOnTx   atomic.Bool // signal to val.ClearSrc() prior to next packet transmission
+		disableRoaming bool        // guarded by Mutex
 	}
 
 	timers struct {
@@ -101,7 +101,7 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 	peer.endpoint.Lock()
 	peer.endpoint.val = nil
 	peer.endpoint.disableRoaming = false
-	peer.endpoint.clearSrcOnTx = false
+	peer.endpoint.clearSrcOnTx.Store(false)
 	peer.endpoint.Unlock()
 
 	// init timers
@@ -114,12 +114,11 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 }
 
 func (peer *Peer) SendBuffers(buffers [][]byte) error {
-	peer.device.net.RLock()
-	defer peer.device.net.RUnlock()
-
-	if peer.device.isClosed() {
+	ref := peer.device.net.cachedBind.Load()
+	if ref == nil {
 		return nil
 	}
+	bind := ref.bind
 
 	peer.endpoint.Lock()
 	endpoint := peer.endpoint.val
@@ -127,13 +126,13 @@ func (peer *Peer) SendBuffers(buffers [][]byte) error {
 		peer.endpoint.Unlock()
 		return errors.New("no known endpoint for peer")
 	}
-	if peer.endpoint.clearSrcOnTx {
+	if peer.endpoint.clearSrcOnTx.Load() {
 		endpoint.ClearSrc()
-		peer.endpoint.clearSrcOnTx = false
+		peer.endpoint.clearSrcOnTx.Store(false)
 	}
 	peer.endpoint.Unlock()
 
-	err := peer.device.net.bind.Send(buffers, endpoint)
+	err := bind.Send(buffers, endpoint)
 	if err == nil {
 		var totalLen uint64
 		for _, b := range buffers {
@@ -219,10 +218,10 @@ func (peer *Peer) ZeroAndFlushAll() {
 	keypairs := &peer.keypairs
 	keypairs.Lock()
 	device.DeleteKeypair(keypairs.previous)
-	device.DeleteKeypair(keypairs.current)
+	device.DeleteKeypair(keypairs.current.Load())
 	device.DeleteKeypair(keypairs.next.Load())
 	keypairs.previous = nil
-	keypairs.current = nil
+	keypairs.current.Store(nil)
 	keypairs.next.Store(nil)
 	keypairs.Unlock()
 
@@ -247,8 +246,8 @@ func (peer *Peer) ExpireCurrentKeypairs() {
 
 	keypairs := &peer.keypairs
 	keypairs.Lock()
-	if keypairs.current != nil {
-		keypairs.current.sendNonce.Store(RejectAfterMessages)
+	if current := keypairs.current.Load(); current != nil {
+		current.sendNonce.Store(RejectAfterMessages)
 	}
 	if next := keypairs.next.Load(); next != nil {
 		next.sendNonce.Store(RejectAfterMessages)
@@ -282,7 +281,7 @@ func (peer *Peer) SetEndpointFromPacket(endpoint conn.Endpoint) {
 	if peer.endpoint.disableRoaming {
 		return
 	}
-	peer.endpoint.clearSrcOnTx = false
+	peer.endpoint.clearSrcOnTx.Store(false)
 	peer.endpoint.val = endpoint
 }
 
@@ -292,5 +291,5 @@ func (peer *Peer) markEndpointSrcForClearing() {
 	if peer.endpoint.val == nil {
 		return
 	}
-	peer.endpoint.clearSrcOnTx = true
+	peer.endpoint.clearSrcOnTx.Store(true)
 }

@@ -284,8 +284,10 @@ func (device *Device) RoutineReadFromTUN() {
 
 		for peer, elemsForPeer := range elemsByPeer {
 			if peer.isRunning.Load() {
-				peer.StagePackets(elemsForPeer)
-				peer.SendStagedPackets()
+				if !peer.sendDirect(elemsForPeer) {
+					peer.StagePackets(elemsForPeer)
+					peer.SendStagedPackets()
+				}
 			} else {
 				for _, elem := range elemsForPeer.elems {
 					device.PutMessageBuffer(elem.buffer)
@@ -313,6 +315,42 @@ func (device *Device) RoutineReadFromTUN() {
 			return
 		}
 	}
+}
+
+// sendDirect bypasses the staged queue when a valid keypair exists.
+// Returns true if elements were directly enqueued for encryption and sending,
+// false if the caller should fall back to StagePackets + SendStagedPackets.
+func (peer *Peer) sendDirect(elemsContainer *QueueOutboundElementsContainer) bool {
+	if len(peer.queue.staged) != 0 || !peer.device.isUp() {
+		return false
+	}
+	keypair := peer.keypairs.Current()
+	if keypair == nil || time.Since(keypair.created) >= RejectAfterTime {
+		return false
+	}
+	// Ensure enough nonce headroom for entire batch to avoid partial assignment.
+	if keypair.sendNonce.Load()+uint64(len(elemsContainer.elems)) >= RejectAfterMessages {
+		return false
+	}
+
+	for _, elem := range elemsContainer.elems {
+		elem.peer = peer
+		elem.nonce = keypair.sendNonce.Add(1) - 1
+		elem.keypair = keypair
+	}
+	elemsContainer.Lock()
+
+	if peer.isRunning.Load() {
+		peer.queue.outbound.c <- elemsContainer
+		peer.device.queue.encryption.c <- elemsContainer
+	} else {
+		for _, elem := range elemsContainer.elems {
+			peer.device.PutMessageBuffer(elem.buffer)
+			peer.device.PutOutboundElement(elem)
+		}
+		peer.device.PutOutboundElementsContainer(elemsContainer)
+	}
+	return true
 }
 
 func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {

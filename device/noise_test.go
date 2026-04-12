@@ -149,7 +149,7 @@ func TestNoiseHandshake(t *testing.T) {
 	}
 
 	key1 := peer1.keypairs.next.Load()
-	key2 := peer2.keypairs.current
+	key2 := peer2.keypairs.current.Load()
 
 	// encrypting / decryption test
 

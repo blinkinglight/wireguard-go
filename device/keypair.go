@@ -34,15 +34,13 @@ type Keypair struct {
 
 type Keypairs struct {
 	sync.RWMutex
-	current  *Keypair
+	current  atomic.Pointer[Keypair]
 	previous *Keypair
 	next     atomic.Pointer[Keypair]
 }
 
 func (kp *Keypairs) Current() *Keypair {
-	kp.RLock()
-	defer kp.RUnlock()
-	return kp.current
+	return kp.current.Load()
 }
 
 func (device *Device) DeleteKeypair(key *Keypair) {

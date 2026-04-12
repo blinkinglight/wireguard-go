@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/net/ipv4"
@@ -24,28 +25,29 @@ var (
 	_ Bind = (*StdNetBind)(nil)
 )
 
+// udpConnState holds the connection state for one address family.
+// It is immutable once created; updates swap the atomic pointer.
+type udpConnState struct {
+	conn      *net.UDPConn
+	pc        batchWriter
+	txOffload bool
+	blackhole bool
+}
+
 // StdNetBind implements Bind for all platforms. While Windows has its own Bind
 // (see bind_windows.go), it may fall back to StdNetBind.
 // TODO: Remove usage of ipv{4,6}.PacketConn when net.UDPConn has comparable
 // methods for sending and receiving multiple datagrams per-syscall. See the
 // proposal in https://github.com/golang/go/issues/45886#issuecomment-1218301564.
 type StdNetBind struct {
-	mu            sync.Mutex // protects all fields except as specified
-	ipv4          *net.UDPConn
-	ipv6          *net.UDPConn
-	ipv4PC        *ipv4.PacketConn // will be nil on non-Linux
-	ipv6PC        *ipv6.PacketConn // will be nil on non-Linux
-	ipv4TxOffload bool
-	ipv4RxOffload bool
-	ipv6TxOffload bool
-	ipv6RxOffload bool
+	mu   sync.Mutex // protects writes to ipv4State/ipv6State and Close
+	ipv4 atomic.Pointer[udpConnState]
+	ipv6 atomic.Pointer[udpConnState]
 
-	// these two fields are not guarded by mu
-	udpAddrPool sync.Pool
-	msgsPool    sync.Pool
-
-	blackhole4 bool
-	blackhole6 bool
+	// these fields are not guarded by mu
+	udpAddrPool  sync.Pool
+	msgsPool     sync.Pool
+	endpointPool sync.Pool
 }
 
 func NewStdNetBind() Bind {
@@ -68,6 +70,12 @@ func NewStdNetBind() Bind {
 					msgs[i].OOB = make([]byte, 0, stickyControlSize+gsoControlSize)
 				}
 				return &msgs
+			},
+		},
+
+		endpointPool: sync.Pool{
+			New: func() any {
+				return &StdNetEndpoint{}
 			},
 		},
 	}
@@ -144,7 +152,7 @@ func (s *StdNetBind) Open(uport uint16) ([]ReceiveFunc, uint16, error) {
 	var err error
 	var tries int
 
-	if s.ipv4 != nil || s.ipv6 != nil {
+	if s.ipv4.Load() != nil || s.ipv6.Load() != nil {
 		return nil, 0, ErrBindAlreadyOpen
 	}
 
@@ -174,22 +182,28 @@ again:
 	}
 	var fns []ReceiveFunc
 	if v4conn != nil {
-		s.ipv4TxOffload, s.ipv4RxOffload = supportsUDPOffload(v4conn)
+		txOffload, rxOffload := supportsUDPOffload(v4conn)
 		if runtime.GOOS == "linux" || runtime.GOOS == "android" {
 			v4pc = ipv4.NewPacketConn(v4conn)
-			s.ipv4PC = v4pc
 		}
-		fns = append(fns, s.makeReceiveIPv4(v4pc, v4conn, s.ipv4RxOffload))
-		s.ipv4 = v4conn
+		s.ipv4.Store(&udpConnState{
+			conn:      v4conn,
+			pc:        v4pc,
+			txOffload: txOffload,
+		})
+		fns = append(fns, s.makeReceiveIPv4(v4pc, v4conn, rxOffload))
 	}
 	if v6conn != nil {
-		s.ipv6TxOffload, s.ipv6RxOffload = supportsUDPOffload(v6conn)
+		txOffload, rxOffload := supportsUDPOffload(v6conn)
 		if runtime.GOOS == "linux" || runtime.GOOS == "android" {
 			v6pc = ipv6.NewPacketConn(v6conn)
-			s.ipv6PC = v6pc
 		}
-		fns = append(fns, s.makeReceiveIPv6(v6pc, v6conn, s.ipv6RxOffload))
-		s.ipv6 = v6conn
+		s.ipv6.Store(&udpConnState{
+			conn:      v6conn,
+			pc:        v6pc,
+			txOffload: txOffload,
+		})
+		fns = append(fns, s.makeReceiveIPv6(v6pc, v6conn, rxOffload))
 	}
 	if len(fns) == 0 {
 		return nil, 0, syscall.EAFNOSUPPORT
@@ -198,8 +212,8 @@ again:
 	return fns, uint16(port), nil
 }
 
-func (s *StdNetBind) putMessages(msgs *[]ipv6.Message) {
-	for i := range *msgs {
+func (s *StdNetBind) putMessages(msgs *[]ipv6.Message, n int) {
+	for i := 0; i < n; i++ {
 		(*msgs)[i].OOB = (*msgs)[i].OOB[:0]
 		(*msgs)[i] = ipv6.Message{Buffers: (*msgs)[i].Buffers, OOB: (*msgs)[i].OOB}
 	}
@@ -236,22 +250,24 @@ func (s *StdNetBind) receiveIP(
 		(*msgs)[i].Buffers[0] = bufs[i]
 		(*msgs)[i].OOB = (*msgs)[i].OOB[:cap((*msgs)[i].OOB)]
 	}
-	defer s.putMessages(msgs)
 	var numMsgs int
 	if runtime.GOOS == "linux" || runtime.GOOS == "android" {
 		if rxOffload {
 			readAt := len(*msgs) - (IdealBatchSize / udpSegmentMaxDatagrams)
 			numMsgs, err = br.ReadBatch((*msgs)[readAt:], 0)
 			if err != nil {
+				s.putMessages(msgs, 0)
 				return 0, err
 			}
 			numMsgs, err = splitCoalescedMessages(*msgs, readAt, getGSOSize)
 			if err != nil {
+				s.putMessages(msgs, 0)
 				return 0, err
 			}
 		} else {
 			numMsgs, err = br.ReadBatch(*msgs, 0)
 			if err != nil {
+				s.putMessages(msgs, 0)
 				return 0, err
 			}
 		}
@@ -259,6 +275,7 @@ func (s *StdNetBind) receiveIP(
 		msg := &(*msgs)[0]
 		msg.N, msg.NN, _, msg.Addr, err = conn.ReadMsgUDP(msg.Buffers[0], msg.OOB)
 		if err != nil {
+			s.putMessages(msgs, 0)
 			return 0, err
 		}
 		numMsgs = 1
@@ -270,10 +287,13 @@ func (s *StdNetBind) receiveIP(
 			continue
 		}
 		addrPort := msg.Addr.(*net.UDPAddr).AddrPort()
-		ep := &StdNetEndpoint{AddrPort: addrPort} // TODO: remove allocation
+		ep := s.endpointPool.Get().(*StdNetEndpoint)
+		ep.AddrPort = addrPort
+		ep.src = ep.src[:0]
 		getSrcFromControl(msg.OOB[:msg.NN], ep)
 		eps[i] = ep
 	}
+	s.putMessages(msgs, numMsgs)
 	return numMsgs, nil
 }
 
@@ -303,22 +323,14 @@ func (s *StdNetBind) Close() error {
 	defer s.mu.Unlock()
 
 	var err1, err2 error
-	if s.ipv4 != nil {
-		err1 = s.ipv4.Close()
-		s.ipv4 = nil
-		s.ipv4PC = nil
+	if state4 := s.ipv4.Load(); state4 != nil {
+		err1 = state4.conn.Close()
+		s.ipv4.Store(nil)
 	}
-	if s.ipv6 != nil {
-		err2 = s.ipv6.Close()
-		s.ipv6 = nil
-		s.ipv6PC = nil
+	if state6 := s.ipv6.Load(); state6 != nil {
+		err2 = state6.conn.Close()
+		s.ipv6.Store(nil)
 	}
-	s.blackhole4 = false
-	s.blackhole6 = false
-	s.ipv4TxOffload = false
-	s.ipv4RxOffload = false
-	s.ipv6TxOffload = false
-	s.ipv6RxOffload = false
 	if err1 != nil {
 		return err1
 	}
@@ -339,32 +351,27 @@ func (e ErrUDPGSODisabled) Unwrap() error {
 }
 
 func (s *StdNetBind) Send(bufs [][]byte, endpoint Endpoint) error {
-	s.mu.Lock()
-	blackhole := s.blackhole4
-	conn := s.ipv4
-	offload := s.ipv4TxOffload
-	br := batchWriter(s.ipv4PC)
-	is6 := false
-	if endpoint.DstIP().Is6() {
-		blackhole = s.blackhole6
-		conn = s.ipv6
-		br = s.ipv6PC
-		is6 = true
-		offload = s.ipv6TxOffload
+	// Lock-free read of connection state via atomic pointer.
+	var state *udpConnState
+	is6 := endpoint.DstIP().Is6()
+	if is6 {
+		state = s.ipv6.Load()
+	} else {
+		state = s.ipv4.Load()
 	}
-	s.mu.Unlock()
-
-	if blackhole {
-		return nil
-	}
-	if conn == nil {
+	if state == nil || state.conn == nil {
 		return syscall.EAFNOSUPPORT
 	}
+	if state.blackhole {
+		return nil
+	}
+
+	conn := state.conn
+	br := state.pc
+	offload := state.txOffload
 
 	msgs := s.getMessages()
-	defer s.putMessages(msgs)
 	ua := s.udpAddrPool.Get().(*net.UDPAddr)
-	defer s.udpAddrPool.Put(ua)
 	if is6 {
 		as16 := endpoint.DstIP().As16()
 		copy(ua.IP, as16[:])
@@ -378,20 +385,22 @@ func (s *StdNetBind) Send(bufs [][]byte, endpoint Endpoint) error {
 	var (
 		retried bool
 		err     error
+		n       int
 	)
 retry:
 	if offload {
-		n := coalesceMessages(ua, endpoint.(*StdNetEndpoint), bufs, *msgs, setGSOSize)
+		n = coalesceMessages(ua, endpoint.(*StdNetEndpoint), bufs, *msgs, setGSOSize)
 		err = s.send(conn, br, (*msgs)[:n])
 		if err != nil && offload && errShouldDisableUDPGSO(err) {
 			offload = false
-			s.mu.Lock()
+			// Atomic swap: create new state with txOffload=false
+			newState := *state
+			newState.txOffload = false
 			if is6 {
-				s.ipv6TxOffload = false
+				s.ipv6.CompareAndSwap(state, &newState)
 			} else {
-				s.ipv4TxOffload = false
+				s.ipv4.CompareAndSwap(state, &newState)
 			}
-			s.mu.Unlock()
 			retried = true
 			goto retry
 		}
@@ -401,8 +410,11 @@ retry:
 			(*msgs)[i].Buffers[0] = bufs[i]
 			setSrcControl(&(*msgs)[i].OOB, endpoint.(*StdNetEndpoint))
 		}
-		err = s.send(conn, br, (*msgs)[:len(bufs)])
+		n = len(bufs)
+		err = s.send(conn, br, (*msgs)[:n])
 	}
+	s.putMessages(msgs, n)
+	s.udpAddrPool.Put(ua)
 	if retried {
 		return ErrUDPGSODisabled{onLaddr: conn.LocalAddr().String(), RetryErr: err}
 	}

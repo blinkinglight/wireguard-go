@@ -517,7 +517,11 @@ func (bind *WinRingBind) Send(bufs [][]byte, endpoint Endpoint) error {
 func (s *StdNetBind) BindSocketToInterface4(interfaceIndex uint32, blackhole bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sysconn, err := s.ipv4.SyscallConn()
+	state4 := s.ipv4.Load()
+	if state4 == nil {
+		return nil
+	}
+	sysconn, err := state4.conn.SyscallConn()
 	if err != nil {
 		return err
 	}
@@ -530,14 +534,20 @@ func (s *StdNetBind) BindSocketToInterface4(interfaceIndex uint32, blackhole boo
 	if err != nil {
 		return err
 	}
-	s.blackhole4 = blackhole
+	newState := *state4
+	newState.blackhole = blackhole
+	s.ipv4.Store(&newState)
 	return nil
 }
 
 func (s *StdNetBind) BindSocketToInterface6(interfaceIndex uint32, blackhole bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sysconn, err := s.ipv6.SyscallConn()
+	state6 := s.ipv6.Load()
+	if state6 == nil {
+		return nil
+	}
+	sysconn, err := state6.conn.SyscallConn()
 	if err != nil {
 		return err
 	}
@@ -550,7 +560,9 @@ func (s *StdNetBind) BindSocketToInterface6(interfaceIndex uint32, blackhole boo
 	if err != nil {
 		return err
 	}
-	s.blackhole6 = blackhole
+	newState := *state6
+	newState.blackhole = blackhole
+	s.ipv6.Store(&newState)
 	return nil
 }
 

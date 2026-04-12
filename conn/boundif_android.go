@@ -6,7 +6,11 @@
 package conn
 
 func (s *StdNetBind) PeekLookAtSocketFd4() (fd int, err error) {
-	sysconn, err := s.ipv4.SyscallConn()
+	state4 := s.ipv4.Load()
+	if state4 == nil {
+		return -1, ErrBindAlreadyOpen
+	}
+	sysconn, err := state4.conn.SyscallConn()
 	if err != nil {
 		return -1, err
 	}
@@ -20,7 +24,11 @@ func (s *StdNetBind) PeekLookAtSocketFd4() (fd int, err error) {
 }
 
 func (s *StdNetBind) PeekLookAtSocketFd6() (fd int, err error) {
-	sysconn, err := s.ipv6.SyscallConn()
+	state6 := s.ipv6.Load()
+	if state6 == nil {
+		return -1, ErrBindAlreadyOpen
+	}
+	sysconn, err := state6.conn.SyscallConn()
 	if err != nil {
 		return -1, err
 	}
