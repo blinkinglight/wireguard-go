@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/blake2s"
-	"golang.org/x/crypto/chacha20poly1305"
 )
 
 type CookieChecker struct {
@@ -23,7 +22,7 @@ type CookieChecker struct {
 	mac2 struct {
 		secret        [blake2s.Size]byte
 		secretSet     time.Time
-		encryptionKey [chacha20poly1305.KeySize]byte
+		encryptionKey [AEADKeySize]byte
 	}
 }
 
@@ -37,7 +36,7 @@ type CookieGenerator struct {
 		cookieSet     time.Time
 		hasLastMAC1   bool
 		lastMAC1      [blake2s.Size128]byte
-		encryptionKey [chacha20poly1305.KeySize]byte
+		encryptionKey [AEADKeySize]byte
 	}
 }
 
@@ -162,8 +161,8 @@ func (st *CookieChecker) CreateReply(
 		return nil, err
 	}
 
-	xchapoly, _ := chacha20poly1305.NewX(st.mac2.encryptionKey[:])
-	xchapoly.Seal(reply.Cookie[:0], reply.Nonce[:], cookie[:], msg[smac1:smac2])
+	gcm := newAEAD(st.mac2.encryptionKey[:])
+	gcm.Seal(reply.Cookie[:0], reply.Nonce[:], cookie[:], msg[smac1:smac2])
 
 	st.RUnlock()
 
@@ -201,8 +200,8 @@ func (st *CookieGenerator) ConsumeReply(msg *MessageCookieReply) bool {
 
 	var cookie [blake2s.Size128]byte
 
-	xchapoly, _ := chacha20poly1305.NewX(st.mac2.encryptionKey[:])
-	_, err := xchapoly.Open(cookie[:0], msg.Nonce[:], msg.Cookie[:], st.mac2.lastMAC1[:])
+	gcm := newAEAD(st.mac2.encryptionKey[:])
+	_, err := gcm.Open(cookie[:0], msg.Nonce[:], msg.Cookie[:], st.mac2.lastMAC1[:])
 	if err != nil {
 		return false
 	}
