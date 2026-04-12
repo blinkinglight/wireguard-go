@@ -18,4 +18,7 @@ var (
 	PreallocatedBuffersPerPool uint32 = 1024
 )
 
-const MaxSegmentSize = 1700
+const (
+	MaxSegmentSize      = 1700
+	decryptionBatchSize = 16
+)

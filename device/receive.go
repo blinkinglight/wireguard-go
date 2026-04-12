@@ -183,6 +183,23 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 				elemsForPeer.elems = append(elemsForPeer.elems, elem)
 				bufsArrs[i] = device.GetMessageBuffer()
 				bufs[i] = bufsArrs[i][:]
+
+				// Dispatch full containers early to enable parallel decryption
+				// across multiple workers instead of one worker handling the
+				// entire batch sequentially.
+				if len(elemsForPeer.elems) >= decryptionBatchSize {
+					if peer.isRunning.Load() {
+						peer.queue.inbound.c <- elemsForPeer
+						device.queue.decryption.c <- elemsForPeer
+					} else {
+						for _, e := range elemsForPeer.elems {
+							device.PutMessageBuffer(e.buffer)
+							device.PutInboundElement(e)
+						}
+						device.PutInboundElementsContainer(elemsForPeer)
+					}
+					delete(elemsByPeer, peer)
+				}
 				continue
 
 			// otherwise it is a fixed size & handshake related packet
@@ -220,6 +237,12 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 			}
 		}
 		for peer, elemsContainer := range elemsByPeer {
+			if len(elemsContainer.elems) == 0 {
+				elemsContainer.Unlock()
+				device.PutInboundElementsContainer(elemsContainer)
+				delete(elemsByPeer, peer)
+				continue
+			}
 			if peer.isRunning.Load() {
 				peer.queue.inbound.c <- elemsContainer
 				device.queue.decryption.c <- elemsContainer

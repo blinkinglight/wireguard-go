@@ -279,9 +279,31 @@ func (device *Device) RoutineReadFromTUN() {
 			elemsForPeer.elems = append(elemsForPeer.elems, elem)
 			elems[i] = device.NewOutboundElement()
 			bufs[i] = elems[i].buffer[:]
+
+			// Dispatch full containers early to enable parallel encryption.
+			if len(elemsForPeer.elems) >= decryptionBatchSize {
+				if peer.isRunning.Load() {
+					if !peer.sendDirect(elemsForPeer) {
+						peer.StagePackets(elemsForPeer)
+						peer.SendStagedPackets()
+					}
+				} else {
+					for _, e := range elemsForPeer.elems {
+						device.PutMessageBuffer(e.buffer)
+						device.PutOutboundElement(e)
+					}
+					device.PutOutboundElementsContainer(elemsForPeer)
+				}
+				delete(elemsByPeer, peer)
+			}
 		}
 
 		for peer, elemsForPeer := range elemsByPeer {
+			if len(elemsForPeer.elems) == 0 {
+				device.PutOutboundElementsContainer(elemsForPeer)
+				delete(elemsByPeer, peer)
+				continue
+			}
 			if peer.isRunning.Load() {
 				if !peer.sendDirect(elemsForPeer) {
 					peer.StagePackets(elemsForPeer)

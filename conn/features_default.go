@@ -10,6 +10,10 @@ package conn
 
 import "net"
 
+func receiveGoroutinesPerSocket() int {
+	return 1
+}
+
 func supportsUDPOffload(_ *net.UDPConn) (txOffload, rxOffload bool) {
 	return
 }

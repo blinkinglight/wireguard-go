@@ -11,6 +11,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// receiveGoroutinesPerSocket returns the number of receive goroutines to
+// spawn per UDP socket. Multiple goroutines enable parallel processing of
+// incoming packets, which is beneficial on multi-queue NICs where the kernel
+// distributes packets across RSS queues.
+func receiveGoroutinesPerSocket() int {
+	return 2
+}
+
 func supportsUDPOffload(conn *net.UDPConn) (txOffload, rxOffload bool) {
 	rc, err := conn.SyscallConn()
 	if err != nil {

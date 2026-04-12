@@ -191,7 +191,11 @@ again:
 			pc:        v4pc,
 			txOffload: txOffload,
 		})
-		fns = append(fns, s.makeReceiveIPv4(v4pc, v4conn, rxOffload))
+		// Multiple receivers per socket enables parallel receive processing
+		// on multi-queue NICs. recvmmsg is safe for concurrent calls.
+		for range receiveGoroutinesPerSocket() {
+			fns = append(fns, s.makeReceiveIPv4(v4pc, v4conn, rxOffload))
+		}
 	}
 	if v6conn != nil {
 		txOffload, rxOffload := supportsUDPOffload(v6conn)
@@ -203,7 +207,9 @@ again:
 			pc:        v6pc,
 			txOffload: txOffload,
 		})
-		fns = append(fns, s.makeReceiveIPv6(v6pc, v6conn, rxOffload))
+		for range receiveGoroutinesPerSocket() {
+			fns = append(fns, s.makeReceiveIPv6(v6pc, v6conn, rxOffload))
+		}
 	}
 	if len(fns) == 0 {
 		return nil, 0, syscall.EAFNOSUPPORT

@@ -87,6 +87,15 @@ func init() {
 			return err
 		},
 
+		// Enable busy-polling for lower latency on high-speed NICs.
+		func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_BUSY_POLL, 50)
+				_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PREFER_BUSY_POLL, 1)
+				_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_BUSY_POLL_BUDGET, 128)
+			})
+		},
+
 		// Attempt to enable UDP_GRO
 		func(network, address string, c syscall.RawConn) error {
 			// Kernels below 5.12 are missing 98184612aca0 ("net:
