@@ -12,8 +12,8 @@ import (
 	"hash"
 	"sync"
 
+	"github.com/cloudflare/circl/dh/x25519"
 	"golang.org/x/crypto/blake2s"
-	"golang.org/x/crypto/curve25519"
 )
 
 /* KDF related functions.
@@ -143,19 +143,19 @@ func newPrivateKey() (sk NoisePrivateKey, err error) {
 }
 
 func (sk *NoisePrivateKey) publicKey() (pk NoisePublicKey) {
-	apk := (*[NoisePublicKeySize]byte)(&pk)
-	ask := (*[NoisePrivateKeySize]byte)(sk)
-	curve25519.ScalarBaseMult(apk, ask)
+	skKey := (*x25519.Key)(sk)
+	pkKey := (*x25519.Key)(&pk)
+	x25519.KeyGen(pkKey, skKey)
 	return
 }
 
 var errInvalidPublicKey = errors.New("invalid public key")
 
 func (sk *NoisePrivateKey) sharedSecret(pk NoisePublicKey) (ss [NoisePublicKeySize]byte, err error) {
-	apk := (*[NoisePublicKeySize]byte)(&pk)
-	ask := (*[NoisePrivateKeySize]byte)(sk)
-	curve25519.ScalarMult(&ss, ask, apk)
-	if isZero(ss[:]) {
+	skKey := (*x25519.Key)(sk)
+	pkKey := (*x25519.Key)(&pk)
+	ssKey := (*x25519.Key)(&ss)
+	if ok := x25519.Shared(ssKey, skKey, pkKey); !ok {
 		return ss, errInvalidPublicKey
 	}
 	return ss, nil

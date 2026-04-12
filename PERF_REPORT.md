@@ -11,6 +11,7 @@ This report summarizes handshake-path and GRO-path performance work done in this
 - `device/noise-protocol.go`: add in-place handshake constructors (`CreateMessageInitiationInto`, `CreateMessageResponseInto`) to enable stack-owned callsites.
 - `device/cookie.go`: reuse keyed BLAKE2s-128 hash state in cookie MAC paths to avoid per-call hash object allocations.
 - `device/logger.go` + `device/send.go`: add fast verbosity flag checks so silent verbose logs do not pay variadic argument conversion cost on handshake hot paths.
+- `device/noise-helpers.go`: switch X25519 keygen/shared-secret implementation from `golang.org/x/crypto/curve25519` calls to `github.com/cloudflare/circl/dh/x25519` fixed-size key APIs to remove crypto-side heap churn.
 - `device/indextable.go`: replace `sync.Map` with `map+RWMutex` to reduce index-path allocations.
 - `device/*_bench_test.go`: add focused benchmark coverage for attribution.
 
@@ -69,6 +70,15 @@ After adding explicit `log.verbose` branch checks around handshake verbose logs:
 - `BenchmarkSendHandshakeInitiation`: `1000 B/op, 19 allocs/op` -> `984 B/op, 18 allocs/op`
 
 This is a small but reliable reduction from avoiding varargs/interface conversion when verbose logging is disabled.
+
+### X25519 backend change impact
+
+After switching to CIRCL X25519 fixed-key APIs:
+
+- `BenchmarkCreateMessageInitiation`: `800 B/op, 16 allocs/op` -> `288 B/op, 5 allocs/op`
+- `BenchmarkSendHandshakeInitiation`: `984 B/op, 18 allocs/op` -> `472 B/op, 7 allocs/op`
+
+This is the largest allocation drop in the series and exceeds the "cut ~5 allocs" target on both paths.
 
 ## Additional API Improvement
 
