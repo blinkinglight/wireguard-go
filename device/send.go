@@ -525,7 +525,7 @@ func calculatePaddingSize(packetSize, mtu int) int {
  */
 func (device *Device) RoutineEncryption(id int) {
 	var paddingZeros [PaddingMultiple]byte
-	var nonce [12]byte // AES-GCM nonce: 4 zero bytes + 8-byte LE counter
+	var nonce [AEADNonceSize]byte
 
 	defer device.log.Verbosef("Routine: encryption worker %d - stopped", id)
 	device.log.Verbosef("Routine: encryption worker %d - started", id)
