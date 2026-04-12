@@ -6,6 +6,8 @@
 package device
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -618,8 +620,8 @@ func (peer *Peer) BeginSymmetricSession() error {
 	// derive keys
 
 	var isInitiator bool
-	var sendKey [chacha20poly1305.KeySize]byte
-	var recvKey [chacha20poly1305.KeySize]byte
+	var sendKey [32]byte
+	var recvKey [32]byte
 
 	if handshake.state == handshakeResponseConsumed {
 		KDF2(
@@ -651,8 +653,10 @@ func (peer *Peer) BeginSymmetricSession() error {
 	// create AEAD instances
 
 	keypair := new(Keypair)
-	keypair.send, _ = chacha20poly1305.New(sendKey[:])
-	keypair.receive, _ = chacha20poly1305.New(recvKey[:])
+	sendBlock, _ := aes.NewCipher(sendKey[:])
+	keypair.send, _ = cipher.NewGCM(sendBlock)
+	recvBlock, _ := aes.NewCipher(recvKey[:])
+	keypair.receive, _ = cipher.NewGCM(recvBlock)
 
 	setZero(sendKey[:])
 	setZero(recvKey[:])
