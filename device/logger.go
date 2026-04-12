@@ -18,6 +18,8 @@ import (
 type Logger struct {
 	Verbosef func(format string, args ...any)
 	Errorf   func(format string, args ...any)
+	verbose  bool
+	error    bool
 }
 
 // Log levels for use with NewLogger.
@@ -34,15 +36,17 @@ func DiscardLogf(format string, args ...any) {}
 // It logs at the specified log level and above.
 // It decorates log lines with the log level, date, time, and prepend.
 func NewLogger(level int, prepend string) *Logger {
-	logger := &Logger{DiscardLogf, DiscardLogf}
+	logger := &Logger{Verbosef: DiscardLogf, Errorf: DiscardLogf}
 	logf := func(prefix string) func(string, ...any) {
 		return log.New(os.Stdout, prefix+": "+prepend, log.Ldate|log.Ltime).Printf
 	}
 	if level >= LogLevelVerbose {
 		logger.Verbosef = logf("DEBUG")
+		logger.verbose = true
 	}
 	if level >= LogLevelError {
 		logger.Errorf = logf("ERROR")
+		logger.error = true
 	}
 	return logger
 }

@@ -18,7 +18,8 @@ type IndexTableEntry struct {
 }
 
 type IndexTable struct {
-	smap sync.Map
+	mu    sync.RWMutex
+	items map[uint32]IndexTableEntry
 }
 
 func randUint32() (uint32, error) {
@@ -29,24 +30,27 @@ func randUint32() (uint32, error) {
 }
 
 func (table *IndexTable) Init() {
-	table.smap = sync.Map{}
+	table.items = make(map[uint32]IndexTableEntry)
 }
 
 func (table *IndexTable) Delete(index uint32) {
-	table.smap.Delete(index)
+	table.mu.Lock()
+	delete(table.items, index)
+	table.mu.Unlock()
 }
 
 func (table *IndexTable) SwapIndexForKeypair(index uint32, keypair *Keypair) {
-	value, ok := table.smap.Load(index)
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	entry, ok := table.items[index]
 	if !ok {
 		return
 	}
-	entry := value.(IndexTableEntry)
-	table.smap.Store(index, IndexTableEntry{
+	table.items[index] = IndexTableEntry{
 		peer:      entry.peer,
 		keypair:   keypair,
 		handshake: nil,
-	})
+	}
 }
 
 func (table *IndexTable) NewIndexForHandshake(peer *Peer, handshake *Handshake) (uint32, error) {
@@ -63,18 +67,24 @@ func (table *IndexTable) NewIndexForHandshake(peer *Peer, handshake *Handshake) 
 			handshake: handshake,
 			keypair:   nil,
 		}
-		_, loaded := table.smap.LoadOrStore(index, entry)
+		table.mu.Lock()
+		_, loaded := table.items[index]
 		if loaded {
+			table.mu.Unlock()
 			continue
 		}
+		table.items[index] = entry
+		table.mu.Unlock()
 		return index, nil
 	}
 }
 
 func (table *IndexTable) Lookup(id uint32) IndexTableEntry {
-	value, ok := table.smap.Load(id)
+	table.mu.RLock()
+	entry, ok := table.items[id]
+	table.mu.RUnlock()
 	if !ok {
 		return IndexTableEntry{}
 	}
-	return value.(IndexTableEntry)
+	return entry
 }

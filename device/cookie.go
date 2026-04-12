@@ -8,6 +8,7 @@ package device
 import (
 	"crypto/hmac"
 	"crypto/rand"
+	"hash"
 	"sync"
 	"time"
 
@@ -18,19 +19,22 @@ import (
 type CookieChecker struct {
 	sync.RWMutex
 	mac1 struct {
-		key [blake2s.Size]byte
+		key  [blake2s.Size]byte
+		pool sync.Pool
 	}
 	mac2 struct {
 		secret        [blake2s.Size]byte
 		secretSet     time.Time
 		encryptionKey [chacha20poly1305.KeySize]byte
+		pool          sync.Pool
 	}
 }
 
 type CookieGenerator struct {
 	sync.RWMutex
 	mac1 struct {
-		key [blake2s.Size]byte
+		key  [blake2s.Size]byte
+		hash hash.Hash
 	}
 	mac2 struct {
 		cookie        [blake2s.Size128]byte
@@ -38,6 +42,7 @@ type CookieGenerator struct {
 		hasLastMAC1   bool
 		lastMAC1      [blake2s.Size128]byte
 		encryptionKey [chacha20poly1305.KeySize]byte
+		hash          hash.Hash
 	}
 }
 
@@ -64,6 +69,12 @@ func (st *CookieChecker) Init(pk NoisePublicKey) {
 	}()
 
 	st.mac2.secretSet = time.Time{}
+	st.mac2.pool = sync.Pool{}
+
+	st.mac1.pool = sync.Pool{New: func() any {
+		mac, _ := blake2s.New128(st.mac1.key[:])
+		return mac
+	}}
 }
 
 func (st *CookieChecker) CheckMAC1(msg []byte) bool {
@@ -75,10 +86,11 @@ func (st *CookieChecker) CheckMAC1(msg []byte) bool {
 	smac1 := smac2 - blake2s.Size128
 
 	var mac1 [blake2s.Size128]byte
-
-	mac, _ := blake2s.New128(st.mac1.key[:])
+	mac := st.mac1.pool.Get().(hash.Hash)
+	mac.Reset()
 	mac.Write(msg[:smac1])
 	mac.Sum(mac1[:0])
+	st.mac1.pool.Put(mac)
 
 	return hmac.Equal(mac1[:], msg[smac1:smac2])
 }
@@ -94,11 +106,11 @@ func (st *CookieChecker) CheckMAC2(msg, src []byte) bool {
 	// derive cookie key
 
 	var cookie [blake2s.Size128]byte
-	func() {
-		mac, _ := blake2s.New128(st.mac2.secret[:])
-		mac.Write(src)
-		mac.Sum(cookie[:0])
-	}()
+	macSecret := st.mac2.pool.Get().(hash.Hash)
+	macSecret.Reset()
+	macSecret.Write(src)
+	macSecret.Sum(cookie[:0])
+	st.mac2.pool.Put(macSecret)
 
 	// calculate mac of packet (including mac1)
 
@@ -132,6 +144,10 @@ func (st *CookieChecker) CreateReply(
 			return nil, err
 		}
 		st.mac2.secretSet = time.Now()
+		st.mac2.pool = sync.Pool{New: func() any {
+			mac, _ := blake2s.New128(st.mac2.secret[:])
+			return mac
+		}}
 		st.Unlock()
 		st.RLock()
 	}
@@ -139,11 +155,11 @@ func (st *CookieChecker) CreateReply(
 	// derive cookie
 
 	var cookie [blake2s.Size128]byte
-	func() {
-		mac, _ := blake2s.New128(st.mac2.secret[:])
-		mac.Write(src)
-		mac.Sum(cookie[:0])
-	}()
+	macSecret := st.mac2.pool.Get().(hash.Hash)
+	macSecret.Reset()
+	macSecret.Write(src)
+	macSecret.Sum(cookie[:0])
+	st.mac2.pool.Put(macSecret)
 
 	// encrypt cookie
 
@@ -180,6 +196,7 @@ func (st *CookieGenerator) Init(pk NoisePublicKey) {
 		hash.Write(pk[:])
 		hash.Sum(st.mac1.key[:0])
 	}()
+	st.mac1.hash, _ = blake2s.New128(st.mac1.key[:])
 
 	func() {
 		hash, _ := blake2s.New256(nil)
@@ -187,6 +204,7 @@ func (st *CookieGenerator) Init(pk NoisePublicKey) {
 		hash.Write(pk[:])
 		hash.Sum(st.mac2.encryptionKey[:0])
 	}()
+	st.mac2.hash = nil
 
 	st.mac2.cookieSet = time.Time{}
 }
@@ -209,6 +227,7 @@ func (st *CookieGenerator) ConsumeReply(msg *MessageCookieReply) bool {
 
 	st.mac2.cookieSet = time.Now()
 	st.mac2.cookie = cookie
+	st.mac2.hash, _ = blake2s.New128(st.mac2.cookie[:])
 	return true
 }
 
@@ -226,11 +245,9 @@ func (st *CookieGenerator) AddMacs(msg []byte) {
 
 	// set mac1
 
-	func() {
-		mac, _ := blake2s.New128(st.mac1.key[:])
-		mac.Write(msg[:smac1])
-		mac.Sum(mac1[:0])
-	}()
+	st.mac1.hash.Reset()
+	st.mac1.hash.Write(msg[:smac1])
+	st.mac1.hash.Sum(mac1[:0])
 	copy(st.mac2.lastMAC1[:], mac1)
 	st.mac2.hasLastMAC1 = true
 
@@ -240,9 +257,7 @@ func (st *CookieGenerator) AddMacs(msg []byte) {
 		return
 	}
 
-	func() {
-		mac, _ := blake2s.New128(st.mac2.cookie[:])
-		mac.Write(msg[:smac2])
-		mac.Sum(mac2[:0])
-	}()
+	st.mac2.hash.Reset()
+	st.mac2.hash.Write(msg[:smac2])
+	st.mac2.hash.Sum(mac2[:0])
 }

@@ -114,22 +114,26 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	peer.handshake.lastSentHandshake = time.Now()
 	peer.handshake.mutex.Unlock()
 
-	peer.device.log.Verbosef("%v - Sending handshake initiation", peer)
+	if peer.device.log.verbose {
+		peer.device.log.Verbosef("%v - Sending handshake initiation", peer)
+	}
 
-	msg, err := peer.device.CreateMessageInitiation(peer)
+	var msg MessageInitiation
+	err := peer.device.CreateMessageInitiationInto(peer, &msg)
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to create initiation message: %v", peer, err)
 		return err
 	}
 
-	packet := make([]byte, MessageInitiationSize)
-	_ = msg.marshal(packet)
-	peer.cookieGenerator.AddMacs(packet)
+	var packet [MessageInitiationSize]byte
+	_ = msg.marshal(packet[:])
+	peer.cookieGenerator.AddMacs(packet[:])
 
 	peer.timersAnyAuthenticatedPacketTraversal()
 	peer.timersAnyAuthenticatedPacketSent()
 
-	err = peer.SendBuffers([][]byte{packet})
+	buffers := [1][]byte{packet[:]}
+	err = peer.SendBuffers(buffers[:])
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to send handshake initiation: %v", peer, err)
 	}
@@ -143,17 +147,20 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.handshake.lastSentHandshake = time.Now()
 	peer.handshake.mutex.Unlock()
 
-	peer.device.log.Verbosef("%v - Sending handshake response", peer)
+	if peer.device.log.verbose {
+		peer.device.log.Verbosef("%v - Sending handshake response", peer)
+	}
 
-	response, err := peer.device.CreateMessageResponse(peer)
+	var response MessageResponse
+	err := peer.device.CreateMessageResponseInto(peer, &response)
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to create response message: %v", peer, err)
 		return err
 	}
 
-	packet := make([]byte, MessageResponseSize)
-	_ = response.marshal(packet)
-	peer.cookieGenerator.AddMacs(packet)
+	var packet [MessageResponseSize]byte
+	_ = response.marshal(packet[:])
+	peer.cookieGenerator.AddMacs(packet[:])
 
 	err = peer.BeginSymmetricSession()
 	if err != nil {
@@ -165,8 +172,8 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.timersAnyAuthenticatedPacketTraversal()
 	peer.timersAnyAuthenticatedPacketSent()
 
-	// TODO: allocation could be avoided
-	err = peer.SendBuffers([][]byte{packet})
+	buffers := [1][]byte{packet[:]}
+	err = peer.SendBuffers(buffers[:])
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to send handshake response: %v", peer, err)
 	}
@@ -174,7 +181,9 @@ func (peer *Peer) SendHandshakeResponse() error {
 }
 
 func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement) error {
-	device.log.Verbosef("Sending cookie response for denied handshake message for %v", initiatingElem.endpoint.DstToString())
+	if device.log.verbose {
+		device.log.Verbosef("Sending cookie response for denied handshake message for %v", initiatingElem.endpoint.DstToString())
+	}
 
 	sender := binary.LittleEndian.Uint32(initiatingElem.packet[4:8])
 	reply, err := device.cookieChecker.CreateReply(initiatingElem.packet, sender, initiatingElem.endpoint.DstToBytes())
@@ -183,10 +192,10 @@ func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement)
 		return err
 	}
 
-	packet := make([]byte, MessageCookieReplySize)
-	_ = reply.marshal(packet)
-	// TODO: allocation could be avoided
-	device.net.bind.Send([][]byte{packet}, initiatingElem.endpoint)
+	var packet [MessageCookieReplySize]byte
+	_ = reply.marshal(packet[:])
+	buffers := [1][]byte{packet[:]}
+	device.net.bind.Send(buffers[:], initiatingElem.endpoint)
 
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"sync"
 	"time"
 
@@ -238,11 +239,12 @@ func mixKey(dst, c *[blake2s.Size]byte, data []byte) {
 }
 
 func mixHash(dst, h *[blake2s.Size]byte, data []byte) {
-	hash, _ := blake2s.New256(nil)
-	hash.Write(h[:])
-	hash.Write(data)
-	hash.Sum(dst[:0])
-	hash.Reset()
+	hh := blake2sHashPool.Get().(hash.Hash)
+	hh.Reset()
+	hh.Write(h[:])
+	hh.Write(data)
+	hh.Sum(dst[:0])
+	blake2sHashPool.Put(hh)
 }
 
 func (h *Handshake) Clear() {
@@ -269,13 +271,11 @@ func init() {
 	mixHash(&InitialHash, &InitialChainKey, []byte(WGIdentifier))
 }
 
-func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, error) {
+func (device *Device) CreateMessageInitiationInto(peer *Peer, msg *MessageInitiation) error {
 	device.staticIdentity.RLock()
-	defer device.staticIdentity.RUnlock()
 
 	handshake := &peer.handshake
 	handshake.mutex.Lock()
-	defer handshake.mutex.Unlock()
 
 	// create ephemeral key
 	var err error
@@ -283,12 +283,14 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 	handshake.chainKey = InitialChainKey
 	handshake.localEphemeral, err = newPrivateKey()
 	if err != nil {
-		return nil, err
+		handshake.mutex.Unlock()
+		device.staticIdentity.RUnlock()
+		return err
 	}
 
 	handshake.mixHash(handshake.remoteStatic[:])
 
-	msg := MessageInitiation{
+	*msg = MessageInitiation{
 		Type:      MessageInitiationType,
 		Ephemeral: handshake.localEphemeral.publicKey(),
 	}
@@ -299,7 +301,9 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 	// encrypt static key
 	ss, err := handshake.localEphemeral.sharedSecret(handshake.remoteStatic)
 	if err != nil {
-		return nil, err
+		handshake.mutex.Unlock()
+		device.staticIdentity.RUnlock()
+		return err
 	}
 	var key [chacha20poly1305.KeySize]byte
 	KDF2(
@@ -314,7 +318,9 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 
 	// encrypt timestamp
 	if isZero(handshake.precomputedStaticStatic[:]) {
-		return nil, errInvalidPublicKey
+		handshake.mutex.Unlock()
+		device.staticIdentity.RUnlock()
+		return errInvalidPublicKey
 	}
 	KDF2(
 		&handshake.chainKey,
@@ -330,12 +336,24 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 	device.indexTable.Delete(handshake.localIndex)
 	msg.Sender, err = device.indexTable.NewIndexForHandshake(peer, handshake)
 	if err != nil {
-		return nil, err
+		handshake.mutex.Unlock()
+		device.staticIdentity.RUnlock()
+		return err
 	}
 	handshake.localIndex = msg.Sender
 
 	handshake.mixHash(msg.Timestamp[:])
 	handshake.state = handshakeInitiationCreated
+	handshake.mutex.Unlock()
+	device.staticIdentity.RUnlock()
+	return nil
+}
+
+func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, error) {
+	var msg MessageInitiation
+	if err := device.CreateMessageInitiationInto(peer, &msg); err != nil {
+		return nil, err
+	}
 	return &msg, nil
 }
 
@@ -443,13 +461,13 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	return peer
 }
 
-func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error) {
+func (device *Device) CreateMessageResponseInto(peer *Peer, msg *MessageResponse) error {
 	handshake := &peer.handshake
 	handshake.mutex.Lock()
-	defer handshake.mutex.Unlock()
 
 	if handshake.state != handshakeInitiationConsumed {
-		return nil, errors.New("handshake initiation must be consumed first")
+		handshake.mutex.Unlock()
+		return errors.New("handshake initiation must be consumed first")
 	}
 
 	// assign index
@@ -458,10 +476,10 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 	device.indexTable.Delete(handshake.localIndex)
 	handshake.localIndex, err = device.indexTable.NewIndexForHandshake(peer, handshake)
 	if err != nil {
-		return nil, err
+		handshake.mutex.Unlock()
+		return err
 	}
 
-	var msg MessageResponse
 	msg.Type = MessageResponseType
 	msg.Sender = handshake.localIndex
 	msg.Receiver = handshake.remoteIndex
@@ -470,7 +488,8 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 
 	handshake.localEphemeral, err = newPrivateKey()
 	if err != nil {
-		return nil, err
+		handshake.mutex.Unlock()
+		return err
 	}
 	msg.Ephemeral = handshake.localEphemeral.publicKey()
 	handshake.mixHash(msg.Ephemeral[:])
@@ -478,12 +497,14 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 
 	ss, err := handshake.localEphemeral.sharedSecret(handshake.remoteEphemeral)
 	if err != nil {
-		return nil, err
+		handshake.mutex.Unlock()
+		return err
 	}
 	handshake.mixKey(ss[:])
 	ss, err = handshake.localEphemeral.sharedSecret(handshake.remoteStatic)
 	if err != nil {
-		return nil, err
+		handshake.mutex.Unlock()
+		return err
 	}
 	handshake.mixKey(ss[:])
 
@@ -507,7 +528,16 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 	handshake.mixHash(msg.Empty[:])
 
 	handshake.state = handshakeResponseCreated
+	handshake.mutex.Unlock()
 
+	return nil
+}
+
+func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error) {
+	var msg MessageResponse
+	if err := device.CreateMessageResponseInto(peer, &msg); err != nil {
+		return nil, err
+	}
 	return &msg, nil
 }
 

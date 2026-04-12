@@ -6,11 +6,11 @@
 package device
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/subtle"
 	"errors"
 	"hash"
+	"sync"
 
 	"golang.org/x/crypto/blake2s"
 	"golang.org/x/crypto/curve25519"
@@ -22,43 +22,97 @@ import (
  */
 
 func HMAC1(sum *[blake2s.Size]byte, key, in0 []byte) {
-	mac := hmac.New(func() hash.Hash {
-		h, _ := blake2s.New256(nil)
-		return h
-	}, key)
-	mac.Write(in0)
-	mac.Sum(sum[:0])
+	hmacBlake2s(sum, key, in0, nil)
 }
 
 func HMAC2(sum *[blake2s.Size]byte, key, in0, in1 []byte) {
-	mac := hmac.New(func() hash.Hash {
-		h, _ := blake2s.New256(nil)
-		return h
-	}, key)
-	mac.Write(in0)
-	mac.Write(in1)
-	mac.Sum(sum[:0])
+	hmacBlake2s(sum, key, in0, in1)
+}
+
+var blake2sHashPool = sync.Pool{New: func() any {
+	h, _ := blake2s.New256(nil)
+	return h
+}}
+
+var (
+	kdfInput1 = [1]byte{0x1}
+	kdfInput2 = [1]byte{0x2}
+	kdfInput3 = [1]byte{0x3}
+)
+
+type blake2sHMACScratch struct {
+	k0    [blake2s.BlockSize]byte
+	ipad  [blake2s.BlockSize]byte
+	opad  [blake2s.BlockSize]byte
+	inner [blake2s.Size]byte
+}
+
+var blake2sHMACScratchPool = sync.Pool{New: func() any {
+	return new(blake2sHMACScratch)
+}}
+
+func hmacBlake2s(sum *[blake2s.Size]byte, key, in0, in1 []byte) {
+	s := blake2sHMACScratchPool.Get().(*blake2sHMACScratch)
+	setZero(s.k0[:])
+
+	if len(key) > blake2s.BlockSize {
+		h := blake2sHashPool.Get().(hash.Hash)
+		h.Reset()
+		h.Write(key)
+		h.Sum(s.inner[:0])
+		blake2sHashPool.Put(h)
+		copy(s.k0[:], s.inner[:])
+		setZero(s.inner[:])
+	} else {
+		copy(s.k0[:], key)
+	}
+
+	for i := range s.k0 {
+		s.ipad[i] = s.k0[i] ^ 0x36
+		s.opad[i] = s.k0[i] ^ 0x5c
+	}
+
+	h := blake2sHashPool.Get().(hash.Hash)
+	h.Reset()
+	h.Write(s.ipad[:])
+	h.Write(in0)
+	if in1 != nil {
+		h.Write(in1)
+	}
+	h.Sum(s.inner[:0])
+
+	h.Reset()
+	h.Write(s.opad[:])
+	h.Write(s.inner[:])
+	h.Sum(sum[:0])
+	blake2sHashPool.Put(h)
+
+	setZero(s.inner[:])
+	setZero(s.k0[:])
+	setZero(s.ipad[:])
+	setZero(s.opad[:])
+	blake2sHMACScratchPool.Put(s)
 }
 
 func KDF1(t0 *[blake2s.Size]byte, key, input []byte) {
 	HMAC1(t0, key, input)
-	HMAC1(t0, t0[:], []byte{0x1})
+	HMAC1(t0, t0[:], kdfInput1[:])
 }
 
 func KDF2(t0, t1 *[blake2s.Size]byte, key, input []byte) {
 	var prk [blake2s.Size]byte
 	HMAC1(&prk, key, input)
-	HMAC1(t0, prk[:], []byte{0x1})
-	HMAC2(t1, prk[:], t0[:], []byte{0x2})
+	HMAC1(t0, prk[:], kdfInput1[:])
+	HMAC2(t1, prk[:], t0[:], kdfInput2[:])
 	setZero(prk[:])
 }
 
 func KDF3(t0, t1, t2 *[blake2s.Size]byte, key, input []byte) {
 	var prk [blake2s.Size]byte
 	HMAC1(&prk, key, input)
-	HMAC1(t0, prk[:], []byte{0x1})
-	HMAC2(t1, prk[:], t0[:], []byte{0x2})
-	HMAC2(t2, prk[:], t1[:], []byte{0x3})
+	HMAC1(t0, prk[:], kdfInput1[:])
+	HMAC2(t1, prk[:], t0[:], kdfInput2[:])
+	HMAC2(t2, prk[:], t1[:], kdfInput3[:])
 	setZero(prk[:])
 }
 

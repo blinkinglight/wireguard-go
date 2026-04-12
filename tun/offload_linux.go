@@ -103,14 +103,17 @@ func (t *tcpGROTable) lookupOrInsert(pkt []byte, srcAddrOffset, dstAddrOffset, t
 	if ok {
 		return items, ok
 	}
-	// TODO: insert() performs another map lookup. This could be rearranged to avoid.
-	t.insert(pkt, srcAddrOffset, dstAddrOffset, tcphOffset, tcphLen, bufsIndex)
+	t.insertWithKey(key, pkt, tcphOffset, tcphLen, bufsIndex)
 	return nil, false
 }
 
 // insert an item in the table for the provided packet and packet metadata.
 func (t *tcpGROTable) insert(pkt []byte, srcAddrOffset, dstAddrOffset, tcphOffset, tcphLen, bufsIndex int) {
 	key := newTCPFlowKey(pkt, srcAddrOffset, dstAddrOffset, tcphOffset)
+	t.insertWithKey(key, pkt, tcphOffset, tcphLen, bufsIndex)
+}
+
+func (t *tcpGROTable) insertWithKey(key tcpFlowKey, pkt []byte, tcphOffset, tcphLen, bufsIndex int) {
 	item := tcpGROItem{
 		key:       key,
 		bufsIndex: uint16(bufsIndex),
@@ -210,14 +213,17 @@ func (u *udpGROTable) lookupOrInsert(pkt []byte, srcAddrOffset, dstAddrOffset, u
 	if ok {
 		return items, ok
 	}
-	// TODO: insert() performs another map lookup. This could be rearranged to avoid.
-	u.insert(pkt, srcAddrOffset, dstAddrOffset, udphOffset, bufsIndex, false)
+	u.insertWithKey(key, pkt, udphOffset, bufsIndex, false)
 	return nil, false
 }
 
 // insert an item in the table for the provided packet and packet metadata.
 func (u *udpGROTable) insert(pkt []byte, srcAddrOffset, dstAddrOffset, udphOffset, bufsIndex int, cSumKnownInvalid bool) {
 	key := newUDPFlowKey(pkt, srcAddrOffset, dstAddrOffset, udphOffset)
+	u.insertWithKey(key, pkt, udphOffset, bufsIndex, cSumKnownInvalid)
+}
+
+func (u *udpGROTable) insertWithKey(key udpFlowKey, pkt []byte, udphOffset, bufsIndex int, cSumKnownInvalid bool) {
 	item := udpGROItem{
 		key:              key,
 		bufsIndex:        uint16(bufsIndex),

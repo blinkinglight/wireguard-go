@@ -227,8 +227,8 @@ again:
 		return nil, 0, fmt.Errorf("AF_XDP socket: %w", err)
 	}
 
-	// 4. Register AF_XDP socket in XSKMAP at key=0 (queue 0).
-	key := uint32(0)
+	// 4. Register AF_XDP socket in XSKMAP at key=queueID.
+	key := uint32(b.queueID)
 	val := uint32(b.xsk.fd)
 	if err := bpfMapUpdateElem(b.mapFD, unsafe.Pointer(&key), unsafe.Pointer(&val)); err != nil {
 		b.xsk.close()
