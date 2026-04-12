@@ -12,6 +12,9 @@ This report summarizes handshake-path and GRO-path performance work done in this
 - `device/cookie.go`: reuse keyed BLAKE2s-128 hash state in cookie MAC paths to avoid per-call hash object allocations.
 - `device/logger.go` + `device/send.go`: add fast verbosity flag checks so silent verbose logs do not pay variadic argument conversion cost on handshake hot paths.
 - `device/noise-helpers.go`: switch X25519 keygen/shared-secret implementation from `golang.org/x/crypto/curve25519` calls to `github.com/cloudflare/circl/dh/x25519` fixed-size key APIs to remove crypto-side heap churn.
+- `device/send.go`: use pooled message buffers (`GetMessageBuffer` / `PutMessageBuffer`) for handshake initiation/response/cookie packet marshaling.
+- `device/send.go`: add pooled single-packet `[][]byte` wrapper (`withSingleSendBuffer`) to avoid per-send one-element slice allocation in handshake paths.
+- `device/noise-helpers.go`: add a specialized KDF fast path for 32-byte chain keys using stack-based BLAKE2s HMAC (`hmacBlake2sKey32`) to eliminate remaining KDF heap allocation.
 - `device/indextable.go`: replace `sync.Map` with `map+RWMutex` to reduce index-path allocations.
 - `device/*_bench_test.go`: add focused benchmark coverage for attribution.
 
@@ -78,7 +81,20 @@ After switching to CIRCL X25519 fixed-key APIs:
 - `BenchmarkCreateMessageInitiation`: `800 B/op, 16 allocs/op` -> `288 B/op, 5 allocs/op`
 - `BenchmarkSendHandshakeInitiation`: `984 B/op, 18 allocs/op` -> `472 B/op, 7 allocs/op`
 
-This is the largest allocation drop in the series and exceeds the "cut ~5 allocs" target on both paths.
+After handshake packet buffer pooling in send path:
+
+- `BenchmarkSendHandshakeInitiation`: `472 B/op, 7 allocs/op` -> `312 B/op, 6 allocs/op`
+
+After pooled single-buffer wrapper in send path:
+
+- `BenchmarkSendHandshakeInitiation`: `312 B/op, 6 allocs/op` -> `~291 B/op, 5 allocs/op`
+
+After KDF fast-path specialization:
+
+- `BenchmarkKDF2`: `32 B/op, 1 allocs/op` -> `0 B/op, 0 allocs/op`
+- `BenchmarkSendHandshakeInitiation`: `~291 B/op, 5 allocs/op` -> `~224-242 B/op, 3 allocs/op`
+
+Overall this exceeds the "cut ~5 allocs" target on both paths by a large margin.
 
 ## Additional API Improvement
 

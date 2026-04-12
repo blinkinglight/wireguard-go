@@ -94,12 +94,66 @@ func hmacBlake2s(sum *[blake2s.Size]byte, key, in0, in1 []byte) {
 	blake2sHMACScratchPool.Put(s)
 }
 
+func hmacBlake2sKey32(sum *[blake2s.Size]byte, key *[blake2s.Size]byte, in0, in1 []byte) {
+	var (
+		k0       [blake2s.BlockSize]byte
+		ipad     [blake2s.BlockSize]byte
+		opad     [blake2s.BlockSize]byte
+		innerBuf [blake2s.BlockSize + blake2s.Size + 1]byte
+		outerBuf [blake2s.BlockSize + blake2s.Size]byte
+	)
+
+	copy(k0[:blake2s.Size], key[:])
+	for i := range k0 {
+		ipad[i] = k0[i] ^ 0x36
+		opad[i] = k0[i] ^ 0x5c
+	}
+
+	n := copy(innerBuf[:], ipad[:])
+	n += copy(innerBuf[n:], in0)
+	if in1 != nil {
+		n += copy(innerBuf[n:], in1)
+	}
+	inner := blake2s.Sum256(innerBuf[:n])
+
+	n = copy(outerBuf[:], opad[:])
+	n += copy(outerBuf[n:], inner[:])
+	*sum = blake2s.Sum256(outerBuf[:n])
+
+	setZero(k0[:])
+	setZero(ipad[:])
+	setZero(opad[:])
+	setZero(innerBuf[:])
+	setZero(outerBuf[:])
+}
+
 func KDF1(t0 *[blake2s.Size]byte, key, input []byte) {
+	if len(key) == blake2s.Size {
+		var key32 [blake2s.Size]byte
+		copy(key32[:], key)
+		hmacBlake2sKey32(t0, &key32, input, nil)
+		hmacBlake2sKey32(t0, t0, kdfInput1[:], nil)
+		setZero(key32[:])
+		return
+	}
+
 	HMAC1(t0, key, input)
 	HMAC1(t0, t0[:], kdfInput1[:])
 }
 
 func KDF2(t0, t1 *[blake2s.Size]byte, key, input []byte) {
+	if len(key) == blake2s.Size {
+		var prk [blake2s.Size]byte
+		var key32 [blake2s.Size]byte
+		copy(key32[:], key)
+		hmacBlake2sKey32(&prk, &key32, input, nil)
+		hmacBlake2sKey32(t0, &prk, kdfInput1[:], nil)
+		hmacBlake2sKey32(t1, &prk, t0[:], kdfInput2[:])
+		setZero(prk[:])
+		setZero(key32[:])
+		return
+	}
+
 	var prk [blake2s.Size]byte
 	HMAC1(&prk, key, input)
 	HMAC1(t0, prk[:], kdfInput1[:])
@@ -108,6 +162,19 @@ func KDF2(t0, t1 *[blake2s.Size]byte, key, input []byte) {
 }
 
 func KDF3(t0, t1, t2 *[blake2s.Size]byte, key, input []byte) {
+	if len(key) == blake2s.Size {
+		var prk [blake2s.Size]byte
+		var key32 [blake2s.Size]byte
+		copy(key32[:], key)
+		hmacBlake2sKey32(&prk, &key32, input, nil)
+		hmacBlake2sKey32(t0, &prk, kdfInput1[:], nil)
+		hmacBlake2sKey32(t1, &prk, t0[:], kdfInput2[:])
+		hmacBlake2sKey32(t2, &prk, t1[:], kdfInput3[:])
+		setZero(prk[:])
+		setZero(key32[:])
+		return
+	}
+
 	var prk [blake2s.Size]byte
 	HMAC1(&prk, key, input)
 	HMAC1(t0, prk[:], kdfInput1[:])

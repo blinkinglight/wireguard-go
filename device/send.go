@@ -19,6 +19,19 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+var singleSendBufferPool = sync.Pool{New: func() any {
+	return new([1][]byte)
+}}
+
+func withSingleSendBuffer(packet []byte, fn func([][]byte) error) error {
+	buffers := singleSendBufferPool.Get().(*[1][]byte)
+	buffers[0] = packet
+	err := fn(buffers[:])
+	buffers[0] = nil
+	singleSendBufferPool.Put(buffers)
+	return err
+}
+
 /* Outbound flow
  *
  * 1. TUN queue
@@ -118,22 +131,22 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 		peer.device.log.Verbosef("%v - Sending handshake initiation", peer)
 	}
 
-	var msg MessageInitiation
-	err := peer.device.CreateMessageInitiationInto(peer, &msg)
+	msg, err := peer.device.CreateMessageInitiationValue(peer)
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to create initiation message: %v", peer, err)
 		return err
 	}
 
-	var packet [MessageInitiationSize]byte
-	_ = msg.marshal(packet[:])
-	peer.cookieGenerator.AddMacs(packet[:])
+	buf := peer.device.GetMessageBuffer()
+	packet := buf[:MessageInitiationSize]
+	_ = msg.marshal(packet)
+	peer.cookieGenerator.AddMacs(packet)
 
 	peer.timersAnyAuthenticatedPacketTraversal()
 	peer.timersAnyAuthenticatedPacketSent()
 
-	buffers := [1][]byte{packet[:]}
-	err = peer.SendBuffers(buffers[:])
+	err = withSingleSendBuffer(packet, peer.SendBuffers)
+	peer.device.PutMessageBuffer(buf)
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to send handshake initiation: %v", peer, err)
 	}
@@ -151,19 +164,20 @@ func (peer *Peer) SendHandshakeResponse() error {
 		peer.device.log.Verbosef("%v - Sending handshake response", peer)
 	}
 
-	var response MessageResponse
-	err := peer.device.CreateMessageResponseInto(peer, &response)
+	response, err := peer.device.CreateMessageResponseValue(peer)
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to create response message: %v", peer, err)
 		return err
 	}
 
-	var packet [MessageResponseSize]byte
-	_ = response.marshal(packet[:])
-	peer.cookieGenerator.AddMacs(packet[:])
+	buf := peer.device.GetMessageBuffer()
+	packet := buf[:MessageResponseSize]
+	_ = response.marshal(packet)
+	peer.cookieGenerator.AddMacs(packet)
 
 	err = peer.BeginSymmetricSession()
 	if err != nil {
+		peer.device.PutMessageBuffer(buf)
 		peer.device.log.Errorf("%v - Failed to derive keypair: %v", peer, err)
 		return err
 	}
@@ -172,8 +186,8 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.timersAnyAuthenticatedPacketTraversal()
 	peer.timersAnyAuthenticatedPacketSent()
 
-	buffers := [1][]byte{packet[:]}
-	err = peer.SendBuffers(buffers[:])
+	err = withSingleSendBuffer(packet, peer.SendBuffers)
+	peer.device.PutMessageBuffer(buf)
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to send handshake response: %v", peer, err)
 	}
@@ -192,10 +206,13 @@ func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement)
 		return err
 	}
 
-	var packet [MessageCookieReplySize]byte
-	_ = reply.marshal(packet[:])
-	buffers := [1][]byte{packet[:]}
-	device.net.bind.Send(buffers[:], initiatingElem.endpoint)
+	buf := device.GetMessageBuffer()
+	packet := buf[:MessageCookieReplySize]
+	_ = reply.marshal(packet)
+	_ = withSingleSendBuffer(packet, func(buffers [][]byte) error {
+		return device.net.bind.Send(buffers, initiatingElem.endpoint)
+	})
+	device.PutMessageBuffer(buf)
 
 	return nil
 }

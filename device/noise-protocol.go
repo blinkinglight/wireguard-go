@@ -355,6 +355,14 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 	return &msg, nil
 }
 
+func (device *Device) CreateMessageInitiationValue(peer *Peer) (MessageInitiation, error) {
+	var msg MessageInitiation
+	if err := device.CreateMessageInitiationInto(peer, &msg); err != nil {
+		return MessageInitiation{}, err
+	}
+	return msg, nil
+}
+
 func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	var (
 		hash     [blake2s.Size]byte
@@ -537,6 +545,14 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 		return nil, err
 	}
 	return &msg, nil
+}
+
+func (device *Device) CreateMessageResponseValue(peer *Peer) (MessageResponse, error) {
+	var msg MessageResponse
+	if err := device.CreateMessageResponseInto(peer, &msg); err != nil {
+		return MessageResponse{}, err
+	}
+	return msg, nil
 }
 
 func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
