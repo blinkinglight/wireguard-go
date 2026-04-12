@@ -15,6 +15,7 @@ This report summarizes handshake-path and GRO-path performance work done in this
 - `device/send.go`: use pooled message buffers (`GetMessageBuffer` / `PutMessageBuffer`) for handshake initiation/response/cookie packet marshaling.
 - `device/send.go`: add pooled single-packet `[][]byte` wrapper (`withSingleSendBuffer`) to avoid per-send one-element slice allocation in handshake paths.
 - `device/noise-helpers.go`: add a specialized KDF fast path for 32-byte chain keys using stack-based BLAKE2s HMAC (`hmacBlake2sKey32`) to eliminate remaining KDF heap allocation.
+- `device/noise-protocol.go`: add per-handshake scratch arrays (`scratchKey`, `scratchSecret`) and reuse them in initiation/response to avoid stack->heap escapes for transient 32-byte crypto buffers.
 - `device/indextable.go`: replace `sync.Map` with `map+RWMutex` to reduce index-path allocations.
 - `device/*_bench_test.go`: add focused benchmark coverage for attribution.
 
@@ -93,6 +94,11 @@ After KDF fast-path specialization:
 
 - `BenchmarkKDF2`: `32 B/op, 1 allocs/op` -> `0 B/op, 0 allocs/op`
 - `BenchmarkSendHandshakeInitiation`: `~291 B/op, 5 allocs/op` -> `~224-242 B/op, 3 allocs/op`
+
+After handshake scratch-buffer reuse:
+
+- `BenchmarkCreateMessageInitiation`: `288 B/op, 5 allocs/op` -> `160 B/op, 1 allocs/op`
+- `BenchmarkSendHandshakeInitiation`: `~224-242 B/op, 3 allocs/op` -> `160 B/op, 1 allocs/op`
 
 Overall this exceeds the "cut ~5 allocs" target on both paths by a large margin.
 

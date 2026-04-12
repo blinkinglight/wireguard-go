@@ -219,11 +219,16 @@ func (sk *NoisePrivateKey) publicKey() (pk NoisePublicKey) {
 var errInvalidPublicKey = errors.New("invalid public key")
 
 func (sk *NoisePrivateKey) sharedSecret(pk NoisePublicKey) (ss [NoisePublicKeySize]byte, err error) {
+	err = sk.sharedSecretInto(&ss, pk)
+	return ss, err
+}
+
+func (sk *NoisePrivateKey) sharedSecretInto(ss *[NoisePublicKeySize]byte, pk NoisePublicKey) error {
 	skKey := (*x25519.Key)(sk)
 	pkKey := (*x25519.Key)(&pk)
-	ssKey := (*x25519.Key)(&ss)
+	ssKey := (*x25519.Key)(ss)
 	if ok := x25519.Shared(ssKey, skKey, pkKey); !ok {
-		return ss, errInvalidPublicKey
+		return errInvalidPublicKey
 	}
-	return ss, nil
+	return nil
 }

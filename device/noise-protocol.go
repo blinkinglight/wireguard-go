@@ -221,6 +221,8 @@ type Handshake struct {
 	remoteStatic              NoisePublicKey           // long term key
 	remoteEphemeral           NoisePublicKey           // ephemeral public key
 	precomputedStaticStatic   [NoisePublicKeySize]byte // precomputed shared secret
+	scratchKey                [chacha20poly1305.KeySize]byte
+	scratchSecret             [NoisePublicKeySize]byte
 	lastTimestamp             tai64n.Timestamp
 	lastInitiationConsumption time.Time
 	lastSentHandshake         time.Time
@@ -297,20 +299,21 @@ func (device *Device) CreateMessageInitiationInto(peer *Peer, msg *MessageInitia
 	handshake.mixHash(msg.Ephemeral[:])
 
 	// encrypt static key
-	ss, err := handshake.localEphemeral.sharedSecret(handshake.remoteStatic)
+	err = handshake.localEphemeral.sharedSecretInto(&handshake.scratchSecret, handshake.remoteStatic)
 	if err != nil {
 		handshake.mutex.Unlock()
 		device.staticIdentity.RUnlock()
 		return err
 	}
-	var key [chacha20poly1305.KeySize]byte
+	setZero(handshake.scratchKey[:])
 	KDF2(
 		&handshake.chainKey,
-		&key,
+		&handshake.scratchKey,
 		handshake.chainKey[:],
-		ss[:],
+		handshake.scratchSecret[:],
 	)
-	aead, _ := chacha20poly1305.New(key[:])
+	setZero(handshake.scratchSecret[:])
+	aead, _ := chacha20poly1305.New(handshake.scratchKey[:])
 	aead.Seal(msg.Static[:0], ZeroNonce[:], device.staticIdentity.publicKey[:], handshake.hash[:])
 	handshake.mixHash(msg.Static[:])
 
@@ -322,13 +325,14 @@ func (device *Device) CreateMessageInitiationInto(peer *Peer, msg *MessageInitia
 	}
 	KDF2(
 		&handshake.chainKey,
-		&key,
+		&handshake.scratchKey,
 		handshake.chainKey[:],
 		handshake.precomputedStaticStatic[:],
 	)
 	timestamp := tai64n.Now()
-	aead, _ = chacha20poly1305.New(key[:])
+	aead, _ = chacha20poly1305.New(handshake.scratchKey[:])
 	aead.Seal(msg.Timestamp[:0], ZeroNonce[:], timestamp[:], handshake.hash[:])
+	setZero(handshake.scratchKey[:])
 
 	// assign index
 	device.indexTable.Delete(handshake.localIndex)
@@ -383,7 +387,8 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	// decrypt static key
 	var peerPK NoisePublicKey
 	var key [chacha20poly1305.KeySize]byte
-	ss, err := device.staticIdentity.privateKey.sharedSecret(msg.Ephemeral)
+	var ss [NoisePublicKeySize]byte
+	err := device.staticIdentity.privateKey.sharedSecretInto(&ss, msg.Ephemeral)
 	if err != nil {
 		return nil
 	}
@@ -501,36 +506,38 @@ func (device *Device) CreateMessageResponseInto(peer *Peer, msg *MessageResponse
 	handshake.mixHash(msg.Ephemeral[:])
 	handshake.mixKey(msg.Ephemeral[:])
 
-	ss, err := handshake.localEphemeral.sharedSecret(handshake.remoteEphemeral)
+	err = handshake.localEphemeral.sharedSecretInto(&handshake.scratchSecret, handshake.remoteEphemeral)
 	if err != nil {
 		handshake.mutex.Unlock()
 		return err
 	}
-	handshake.mixKey(ss[:])
-	ss, err = handshake.localEphemeral.sharedSecret(handshake.remoteStatic)
+	handshake.mixKey(handshake.scratchSecret[:])
+	err = handshake.localEphemeral.sharedSecretInto(&handshake.scratchSecret, handshake.remoteStatic)
 	if err != nil {
 		handshake.mutex.Unlock()
 		return err
 	}
-	handshake.mixKey(ss[:])
+	handshake.mixKey(handshake.scratchSecret[:])
+	setZero(handshake.scratchSecret[:])
 
 	// add preshared key
 
 	var tau [blake2s.Size]byte
-	var key [chacha20poly1305.KeySize]byte
+	setZero(handshake.scratchKey[:])
 
 	KDF3(
 		&handshake.chainKey,
 		&tau,
-		&key,
+		&handshake.scratchKey,
 		handshake.chainKey[:],
 		handshake.presharedKey[:],
 	)
 
 	handshake.mixHash(tau[:])
 
-	aead, _ := chacha20poly1305.New(key[:])
+	aead, _ := chacha20poly1305.New(handshake.scratchKey[:])
 	aead.Seal(msg.Empty[:0], ZeroNonce[:], nil, handshake.hash[:])
+	setZero(handshake.scratchKey[:])
 	handshake.mixHash(msg.Empty[:])
 
 	handshake.state = handshakeResponseCreated
@@ -593,14 +600,15 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
 		mixHash(&hash, &handshake.hash, msg.Ephemeral[:])
 		mixKey(&chainKey, &handshake.chainKey, msg.Ephemeral[:])
 
-		ss, err := handshake.localEphemeral.sharedSecret(msg.Ephemeral)
+		var ss [NoisePublicKeySize]byte
+		err := handshake.localEphemeral.sharedSecretInto(&ss, msg.Ephemeral)
 		if err != nil {
 			return false
 		}
 		mixKey(&chainKey, &chainKey, ss[:])
 		setZero(ss[:])
 
-		ss, err = device.staticIdentity.privateKey.sharedSecret(msg.Ephemeral)
+		err = device.staticIdentity.privateKey.sharedSecretInto(&ss, msg.Ephemeral)
 		if err != nil {
 			return false
 		}
