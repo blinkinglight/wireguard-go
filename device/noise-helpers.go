@@ -12,7 +12,6 @@ import (
 	"hash"
 	"sync"
 
-	"github.com/cloudflare/circl/dh/x25519"
 	"golang.org/x/crypto/blake2s"
 )
 
@@ -210,9 +209,7 @@ func newPrivateKey() (sk NoisePrivateKey, err error) {
 }
 
 func (sk *NoisePrivateKey) publicKey() (pk NoisePublicKey) {
-	skKey := (*x25519.Key)(sk)
-	pkKey := (*x25519.Key)(&pk)
-	x25519.KeyGen(pkKey, skKey)
+	pk = x25519PublicKey(sk)
 	return
 }
 
@@ -224,10 +221,7 @@ func (sk *NoisePrivateKey) sharedSecret(pk NoisePublicKey) (ss [NoisePublicKeySi
 }
 
 func (sk *NoisePrivateKey) sharedSecretInto(ss *[NoisePublicKeySize]byte, pk NoisePublicKey) error {
-	skKey := (*x25519.Key)(sk)
-	pkKey := (*x25519.Key)(&pk)
-	ssKey := (*x25519.Key)(ss)
-	if ok := x25519.Shared(ssKey, skKey, pkKey); !ok {
+	if ok := x25519SharedSecretInto(ss, sk, pk); !ok {
 		return errInvalidPublicKey
 	}
 	return nil
