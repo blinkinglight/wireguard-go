@@ -1,6 +1,66 @@
+
 # Go Implementation of [WireGuard](https://www.wireguard.com/)
 
-This is an implementation of WireGuard in Go.
+This is an experimental LLM optimized implementation of WireGuard in Go.
+
+
+experimental mode for encryption:
+
+Example (userspace wireguard-go interface wglo0):
+
+printf 'set=1\nexperimental_cipher=aesgcm\n\n' | socat - UNIX-CONNECT:/var/run/wireguard/wglo0.sock
+
+Switch back:
+
+printf 'set=1\nexperimental_cipher=chacha20poly1305\n\n' | socat - UNIX-CONNECT:/var/run/wireguard/wglo0.sock
+
+
+setup host1: 
+
+```
+wireguard-go wglo0
+PRIV_A=$(wg genkey)
+PUB_A=$(echo $PRIV_A | wg pubkey)
+echo "Host A Public Key: $PUB_A"
+
+# ethtool -N br255 flow-type udp4 dst-port 51820 action 0
+
+# Sukuriame interfeisą, priskiriame IP ir paleidžiame klausytis prievado 51820
+ip link add dev wglo0 type wireguard
+ip addr add 10.253.255.2/24 dev wglo0
+wg set wglo0 private-key <(echo $PRIV_A) listen-port 51821
+ip link set up dev wglo0
+```
+
+setup host2:
+
+```
+wireguard-go wglo0
+PRIV_A=$(wg genkey)
+PUB_A=$(echo $PRIV_A | wg pubkey)
+echo "Host A Public Key: $PUB_A"
+
+# Sukuriame interfeisą, priskiriame IP ir paleidžiame klausytis prievado 51820
+ip link add dev wglo0 type wireguard
+ip addr add 10.253.255.1/24 dev wglo0
+wg set wglo0 private-key <(echo $PRIV_A) listen-port 51821
+ip link set up dev wglo0
+```
+
+peer hosts1 to host2:
+
+```
+wg set wglo0 peer [host2publickey] allowed-ips 10.253.255.0/24 endpoint 10.255.255.1:51821 persistent-keepalive 25
+```
+
+
+peer host2 to host1:
+
+```
+wg set wglo0 peer [host1publickey] allowed-ips 10.253.255.0/24
+```
+
+
 
 ## Usage
 

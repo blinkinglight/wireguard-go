@@ -240,6 +240,18 @@ func (device *Device) handleDeviceLine(key, value string) error {
 		device.log.Verbosef("UAPI: Removing all peers")
 		device.RemoveAllPeers()
 
+	case "experimental_cipher":
+		switch value {
+		case "chacha20poly1305", "chacha", "default":
+			device.setAEADMode(aeadModeChaCha20Poly1305)
+			device.log.Verbosef("UAPI: Using ChaCha20-Poly1305 session AEAD")
+		case "aesgcm", "aes-gcm", "aes":
+			device.setAEADMode(aeadModeAESGCM)
+			device.log.Errorf("UAPI: Using experimental AES-GCM session AEAD (non-standard WireGuard mode)")
+		default:
+			return ipcErrorf(ipc.IpcErrorInvalid, "invalid experimental_cipher value: %v", value)
+		}
+
 	default:
 		return ipcErrorf(ipc.IpcErrorInvalid, "invalid UAPI device key: %v", key)
 	}

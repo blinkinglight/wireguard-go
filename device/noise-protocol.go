@@ -6,6 +6,8 @@
 package device
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -705,8 +707,15 @@ func (peer *Peer) BeginSymmetricSession() error {
 	// create AEAD instances
 
 	keypair := new(Keypair)
-	keypair.send, _ = chacha20poly1305.New(sendKey[:])
-	keypair.receive, _ = chacha20poly1305.New(recvKey[:])
+	if device.getAEADMode() == aeadModeAESGCM {
+		sendBlock, _ := aes.NewCipher(sendKey[:])
+		keypair.send, _ = cipher.NewGCM(sendBlock)
+		recvBlock, _ := aes.NewCipher(recvKey[:])
+		keypair.receive, _ = cipher.NewGCM(recvBlock)
+	} else {
+		keypair.send, _ = chacha20poly1305.New(sendKey[:])
+		keypair.receive, _ = chacha20poly1305.New(recvKey[:])
+	}
 
 	setZero(sendKey[:])
 	setZero(recvKey[:])

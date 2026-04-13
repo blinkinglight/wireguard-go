@@ -92,9 +92,28 @@ type Device struct {
 		mtu    atomic.Int32
 	}
 
+	crypto struct {
+		aeadMode atomic.Uint32
+	}
+
 	ipcMutex sync.RWMutex
 	closed   chan struct{}
 	log      *Logger
+}
+
+type aeadMode uint32
+
+const (
+	aeadModeChaCha20Poly1305 aeadMode = iota
+	aeadModeAESGCM
+)
+
+func (device *Device) getAEADMode() aeadMode {
+	return aeadMode(device.crypto.aeadMode.Load())
+}
+
+func (device *Device) setAEADMode(mode aeadMode) {
+	device.crypto.aeadMode.Store(uint32(mode))
 }
 
 // deviceState represents the state of a Device.
@@ -304,6 +323,7 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device.peers.keyMap = make(map[NoisePublicKey]*Peer)
 	device.rate.limiter.Init()
 	device.indexTable.Init()
+	device.setAEADMode(aeadModeChaCha20Poly1305)
 
 	device.PopulatePools()
 
