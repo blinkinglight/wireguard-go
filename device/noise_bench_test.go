@@ -10,8 +10,6 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/blake2s"
-	"golang.org/x/crypto/chacha20poly1305"
-	"golang.org/x/crypto/poly1305"
 
 	"golang.zx2c4.com/wireguard/tai64n"
 )
@@ -142,14 +140,14 @@ func benchmarkCreateMessageInitiationFixedEphemeral(device *Device, peer *Peer, 
 	handshake.mixKey(msg.Ephemeral[:])
 	handshake.mixHash(msg.Ephemeral[:])
 
-	var key [chacha20poly1305.KeySize]byte
+	var key [AEADKeySize]byte
 	KDF2(
 		&handshake.chainKey,
 		&key,
 		handshake.chainKey[:],
 		ss[:],
 	)
-	aead, _ := chacha20poly1305.New(key[:])
+	aead := newAEAD(key[:])
 	aead.Seal(msg.Static[:0], ZeroNonce[:], device.staticIdentity.publicKey[:], handshake.hash[:])
 	handshake.mixHash(msg.Static[:])
 
@@ -163,7 +161,7 @@ func benchmarkCreateMessageInitiationFixedEphemeral(device *Device, peer *Peer, 
 		handshake.precomputedStaticStatic[:],
 	)
 	timestamp := tai64n.Now()
-	aead, _ = chacha20poly1305.New(key[:])
+	aead = newAEAD(key[:])
 	aead.Seal(msg.Timestamp[:0], ZeroNonce[:], timestamp[:], handshake.hash[:])
 
 	device.indexTable.Delete(handshake.localIndex)
@@ -208,7 +206,7 @@ func BenchmarkCreateMessageInitiationFixedEphemeral(b *testing.B) {
 	}
 }
 
-func benchmarkCreateMessageInitiationFixedEphemeralPrecomputedAEAD(device *Device, peer *Peer, ephemeral NoisePublicKey, staticCiphertext [NoisePublicKeySize + poly1305.TagSize]byte, hashAfterStatic [blake2s.Size]byte, aeadTimestamp cipher.AEAD) (*MessageInitiation, error) {
+func benchmarkCreateMessageInitiationFixedEphemeralPrecomputedAEAD(device *Device, peer *Peer, ephemeral NoisePublicKey, staticCiphertext [NoisePublicKeySize + AEADTagSize]byte, hashAfterStatic [blake2s.Size]byte, aeadTimestamp cipher.AEAD) (*MessageInitiation, error) {
 	device.staticIdentity.RLock()
 	defer device.staticIdentity.RUnlock()
 
@@ -269,20 +267,20 @@ func BenchmarkCreateMessageInitiationFixedEphemeralPrecomputedAEAD(b *testing.B)
 
 	var (
 		chainAfterStatic = chainStart
-		keyStatic        [chacha20poly1305.KeySize]byte
+		keyStatic        [AEADKeySize]byte
 	)
 	KDF2(&chainAfterStatic, &keyStatic, chainStart[:], ss[:])
-	aeadStatic, _ := chacha20poly1305.New(keyStatic[:])
+	aeadStatic := newAEAD(keyStatic[:])
 
-	var staticCiphertext [NoisePublicKeySize + poly1305.TagSize]byte
+	var staticCiphertext [NoisePublicKeySize + AEADTagSize]byte
 	aeadStatic.Seal(staticCiphertext[:0], ZeroNonce[:], peer.device.staticIdentity.publicKey[:], hashStart[:])
 
 	hashAfterStatic := hashStart
 	mixHash(&hashAfterStatic, &hashAfterStatic, staticCiphertext[:])
 
-	var keyTimestamp [chacha20poly1305.KeySize]byte
+	var keyTimestamp [AEADKeySize]byte
 	KDF2(&chainAfterStatic, &keyTimestamp, chainAfterStatic[:], peer.handshake.precomputedStaticStatic[:])
-	aeadTimestamp, _ := chacha20poly1305.New(keyTimestamp[:])
+	aeadTimestamp := newAEAD(keyTimestamp[:])
 
 	b.ReportAllocs()
 	b.ResetTimer()
