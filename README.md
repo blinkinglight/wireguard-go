@@ -23,9 +23,6 @@ PRIV_A=$(wg genkey)
 PUB_A=$(echo $PRIV_A | wg pubkey)
 echo "Host A Public Key: $PUB_A"
 
-# ethtool -N br255 flow-type udp4 dst-port 51820 action 0
-
-# Sukuriame interfeisą, priskiriame IP ir paleidžiame klausytis prievado 51820
 ip link add dev wglo0 type wireguard
 ip addr add 10.253.255.2/24 dev wglo0
 wg set wglo0 private-key <(echo $PRIV_A) listen-port 51821
@@ -40,7 +37,6 @@ PRIV_A=$(wg genkey)
 PUB_A=$(echo $PRIV_A | wg pubkey)
 echo "Host A Public Key: $PUB_A"
 
-# Sukuriame interfeisą, priskiriame IP ir paleidžiame klausytis prievado 51820
 ip link add dev wglo0 type wireguard
 ip addr add 10.253.255.1/24 dev wglo0
 wg set wglo0 private-key <(echo $PRIV_A) listen-port 51821
