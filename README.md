@@ -4,6 +4,10 @@
 This is an experimental LLM optimized implementation of WireGuard in Go.
 
 
+experimental eBPF:
+
+WG_XDP_IFACE=br255 WG_XDP_ZEROCOPY=1 WG_XDP_NATIVE=1   WG_XDP_QUEUE=0    WG_PROCESS_FOREGROUND=1 LOG_LEVEL=debug wireguard-go -f wglo0
+
 experimental mode for encryption:
 
 Example (userspace wireguard-go interface wglo0):
